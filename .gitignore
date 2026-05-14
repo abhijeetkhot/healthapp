@@ -39,3 +39,29 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+# Environment — never commit
+.env
+.env.local
+.env*.local
+# ...but DO track the placeholder template
+!.env.local.example
+
+# Node
+node_modules/
+.next/
+dist/
+build/
+*.log
+
+# Supabase
+supabase/.branches/
+supabase/.temp/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
