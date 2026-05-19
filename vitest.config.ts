@@ -9,6 +9,8 @@ export default defineConfig({
       // `server-only` throws on import outside a server context — fine in
       // prod (catches client-bundle leaks) but breaks vitest's node env.
       'server-only': fileURLToPath(new URL('./test/server-only-stub.ts', import.meta.url)),
+      // Mirror tsconfig paths so route test files can import '@/container' etc.
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
     coverage: {
       provider: 'v8',
