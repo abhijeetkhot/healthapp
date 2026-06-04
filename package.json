@@ -1,36 +1,12 @@
 {
-  "name": "healthapp",
-  "version": "0.1.0",
+  "name": "healthapp-root",
+  "version": "0.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "eslint",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
-  },
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.96.0",
-    "@supabase/supabase-js": "^2.106.0",
-    "date-fns": "^4.2.1",
-    "next": "16.2.6",
-    "react": "19.2.4",
-    "react-dom": "19.2.4",
-    "server-only": "^0.0.1",
-    "zod": "^4.4.3"
+    "test": "pnpm -r --filter './packages/**' --filter './apps/**' test",
+    "typecheck": "pnpm -r --filter './packages/**' --filter './apps/**' typecheck"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "@vitest/coverage-v8": "^4.1.6",
-    "eslint": "^9",
-    "eslint-config-next": "16.2.6",
-    "supabase": "^2.98.2",
-    "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^4.1.6"
   }

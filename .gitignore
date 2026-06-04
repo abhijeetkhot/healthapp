@@ -65,3 +65,14 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Migration scratch / scratch scripts (kept out of the repo)
+.commit_msg.txt
+.phase-*.sh
+autonomous-*.sh
+status-*.sh
+phase*.log
+migration.log
+migration-prompt.md
+phase5-prompt.md
+PHASE5_REPORT.md
