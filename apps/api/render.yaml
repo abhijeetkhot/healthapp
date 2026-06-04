@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: healthapp-api
+    runtime: docker
+    dockerfilePath: ./apps/api/Dockerfile
+    dockerContext: .
+    envVars:
+      # Set these in the Render dashboard — do NOT commit secrets:
+      # SUPABASE_URL
+      # SUPABASE_SERVICE_ROLE_KEY
+      # OURA_CLIENT_ID
+      # OURA_CLIENT_SECRET
+      # OURA_REDIRECT_URI (update to point at the api host after deploy)
+      # ANTHROPIC_API_KEY
+      # WEB_ORIGIN (the Vercel URL of apps/web, e.g. https://healthapp.vercel.app)
+      # AUTH_SECRET (a long random string — shared between web and api)
+      # COOKIE_SECRET (a long random string for cookie signing)
+      - key: NODE_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: info
+      - key: PORT
+        value: "3001"
