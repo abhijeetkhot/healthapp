@@ -3,11 +3,13 @@
 ## Project overview
 
 A personal-use holistic health dashboard that aggregates data from Oura Ring, Apple Watch
-(via HealthKit), food photos, and supplement logs. Built first as a **web app on
-Vercel + Supabase**, architected so an **iOS app and an agentic AI layer** can be added
-on top with minimal rework.
+(via HealthKit), food photos, and supplement logs. Split into a **Next.js frontend on
+Vercel** and a **Fastify API on Render**, sharing a `packages/core` domain layer in a
+pnpm-workspaces monorepo. Architected so an **iOS app and an agentic AI layer** can be
+added on top with minimal rework.
 
-Single user for now. No auth UI. Data lives in Supabase Postgres.
+Single user for now. Auth is a shared-secret cookie set at `POST /api/auth/login`. Data
+lives in Supabase Postgres.
 
 ---
 
@@ -16,13 +18,18 @@ Single user for now. No auth UI. Data lives in Supabase Postgres.
 ```
 ┌──────────────────────────────────────────────────────────┐
 │                    Presentation layer                    │
-│          Next.js 15 (App Router) — deployed on Vercel    │
+│   apps/web — Next.js (App Router) — deployed on Vercel   │
+│   browser fetches /api/* on Render with credentials      │
+├──────────────────────────────────────────────────────────┤
+│                      API layer                           │
+│   apps/api — Fastify on Render                           │
+│   schema-first routes · shared-secret cookie auth        │
 ├──────────────────────────────────────────────────────────┤
 │         Agentic layer  (Phase 2+ — not built yet)        │
 │   Claude tool-calling agent · scheduled jobs ·           │
 │   cross-domain reasoning · proactive alerts              │
 ├──────────────────────────────────────────────────────────┤
-│                     Domain layer                         │
+│         Domain layer  (packages/core — @health/core)     │
 │     Pure TypeScript — services, models, use-cases        │
 │     No framework deps. Reused by iOS app and agent.      │
 ├──────────────────────────────────────────────────────────┤
@@ -34,8 +41,9 @@ Single user for now. No auth UI. Data lives in Supabase Postgres.
 ### Three design principles
 
 **1. Domain layer is platform-agnostic.**
-`src/core/` has no Next.js, no Supabase client, no browser APIs. Every service and
-use-case can be imported unchanged by a React Native app or an AI agent.
+`packages/core/src/` has no Next.js, no Supabase client, no browser APIs. Every service
+and use-case can be imported unchanged by a React Native app or an AI agent. Both
+`apps/web` and `apps/api` import it as `@health/core` (workspace package).
 
 **2. Infrastructure adapters implement typed ports.**
 The domain layer only calls interfaces (`IDatabase`, `IHealthDataProvider`, `IFoodAI`,
@@ -50,98 +58,101 @@ are rewritten — the agent is a new consumer of what already exists.
 
 ## Repository structure
 
+pnpm-workspaces monorepo. `packages/core` is shared by both apps as `@health/core`.
+
 ```
 /
-├── src/
-│   ├── core/                            # Platform-agnostic domain layer
-│   │   ├── models/
-│   │   │   ├── health.ts                # DailyHealthMetrics, Workout
-│   │   │   ├── nutrition.ts             # Meal, FoodItem, MacroSummary
-│   │   │   └── supplement.ts           # Supplement, DoseLog, IngredientDose
-│   │   ├── services/                    # Business logic — zero platform deps
-│   │   │   ├── HealthSyncService.ts
-│   │   │   ├── NutritionService.ts
-│   │   │   ├── SupplementService.ts
-│   │   │   └── DashboardService.ts
-│   │   ├── ports/                       # Interfaces infrastructure must implement
-│   │   │   ├── IDatabase.ts
-│   │   │   ├── IHealthDataProvider.ts
-│   │   │   ├── IFoodAI.ts
-│   │   │   └── IImageCapture.ts
-│   │   ├── usecases/                    # One file per user-facing workflow
-│   │   │   ├── SyncWearableData.ts      # WF-01
-│   │   │   ├── LogMealFromPhoto.ts      # WF-02
-│   │   │   ├── LogMealFromBarcode.ts    # WF-03
-│   │   │   ├── LogSupplement.ts         # WF-04
-│   │   │   ├── AddSupplementFromPhoto.ts # WF-05
-│   │   │   ├── ImportAppleHealthExport.ts # WF-07
-│   │   │   └── GetDashboardSummary.ts
-│   │   └── Result.ts                    # Result<T, E> type
+├── apps/
+│   ├── web/                             # Next.js — UI only (Vercel)
+│   │   ├── src/
+│   │   │   ├── app/
+│   │   │   │   ├── (dashboard)/page.tsx # / → dashboard
+│   │   │   │   ├── food/page.tsx
+│   │   │   │   ├── supplements/page.tsx
+│   │   │   │   ├── settings/page.tsx
+│   │   │   │   └── login/page.tsx       # Password form → POST /api/auth/login
+│   │   │   ├── components/
+│   │   │   ├── hooks/                   # fetch ${NEXT_PUBLIC_API_URL}/api/* with credentials
+│   │   │   ├── store/
+│   │   │   └── config/
+│   │   ├── package.json
+│   │   ├── tsconfig.json
+│   │   ├── next.config.ts
+│   │   └── public/
 │   │
-│   ├── infrastructure/
-│   │   ├── SupabaseAdapter.ts           # IDatabase via @supabase/supabase-js
-│   │   ├── OuraApiAdapter.ts            # IHealthDataProvider (live Oura API)
-│   │   ├── AppleHealthXmlAdapter.ts     # IHealthDataProvider (reads apple_health_daily)
-│   │   ├── ClaudeVisionAdapter.ts       # IFoodAI via Anthropic API
-│   │   ├── WebCameraAdapter.ts          # IImageCapture via MediaDevices API
-│   │   └── ios/                         # Placeholder — populated when adding iOS
-│   │       ├── HealthKitAdapter.ts      # IHealthDataProvider — same port, replaces AppleHealthXmlAdapter
-│   │       └── NativeCameraAdapter.ts
-│   │
-│   ├── app/                             # Next.js App Router
-│   │   ├── (dashboard)/page.tsx         # / → dashboard
-│   │   ├── food/page.tsx
-│   │   ├── supplements/page.tsx
-│   │   ├── settings/page.tsx
-│   │   └── api/                         # All DB access goes through these — browser never imports Supabase
-│   │       ├── oura/auth/route.ts       # Redirect to Oura OAuth
-│   │       ├── oura/callback/route.ts   # Exchange code → store tokens
-│   │       ├── sync/route.ts            # POST → manual sync trigger (all providers)
-│   │       ├── health/import/route.ts   # POST aggregated daily rows from Apple Health export (WF-07)
-│   │       ├── dashboard/route.ts       # GET ?date=... → DashboardSummary
-│   │       ├── meals/route.ts           # GET ?date=... · POST new meal
-│   │       ├── meals/identify/route.ts  # POST base64 → identified foods (Claude Vision)
-│   │       ├── supplements/route.ts     # GET stack · POST new supplement
-│   │       ├── supplements/logs/route.ts # GET ?date=... · POST dose log
-│   │       └── agent/route.ts           # Phase 2: streaming agent endpoint
-│   │
-│   ├── components/
-│   │   ├── dashboard/
-│   │   │   ├── RecoveryCard.tsx
-│   │   │   ├── NutritionBar.tsx
-│   │   │   ├── SupplementChecklist.tsx
-│   │   │   └── ActivityCard.tsx
-│   │   ├── settings/
-│   │   │   └── AppleHealthImportFlow.tsx # Drag-drop zip → browser parses → POST aggregates
-│   │   ├── logging/
-│   │   │   ├── PhotoCaptureFlow.tsx
-│   │   │   ├── MealConfirmScreen.tsx
-│   │   │   └── SupplementLogger.tsx
-│   │   └── ui/
-│   │       ├── MetricCard.tsx
-│   │       ├── ScoreBadge.tsx
-│   │       └── TrendSparkline.tsx
-│   │
-│   ├── hooks/
-│   │   ├── useDashboard.ts
-│   │   ├── useNutrition.ts
-│   │   └── useSupplements.ts
-│   │
-│   ├── store/index.ts                   # Zustand — UI state only
-│   ├── container.ts                     # Dependency injection / composition root
-│   └── config/user.ts                   # Hardcoded personal profile
+│   └── api/                             # Fastify backend (Render)
+│       ├── src/
+│       │   ├── index.ts                 # Bootstrap: plugins + routes + listen
+│       │   ├── plugins/
+│       │   │   └── auth.ts              # Global onRequest: cookie check (fp-wrapped)
+│       │   ├── lib/
+│       │   │   └── respond.ts           # Result<T> → Fastify reply helper
+│       │   └── routes/
+│       │       ├── auth.ts              # POST /api/auth/login · POST /api/auth/logout
+│       │       ├── dashboard.ts         # GET  /api/dashboard?date=
+│       │       ├── meals.ts             # GET  /api/meals?date= · POST /api/meals
+│       │       ├── mealsIdentify.ts     # POST /api/meals/identify
+│       │       ├── supplements.ts       # GET  /api/supplements · POST /api/supplements
+│       │       ├── supplementsLogs.ts   # GET  /api/supplements/logs?date= · POST
+│       │       ├── sync.ts              # POST /api/sync
+│       │       ├── healthImport.ts      # POST /api/health/import
+│       │       └── oura.ts              # GET  /api/oura/auth · GET /api/oura/callback
+│       ├── package.json
+│       ├── tsconfig.json
+│       ├── Dockerfile
+│       └── render.yaml
+│
+├── packages/
+│   └── core/                            # Platform-agnostic domain layer (@health/core)
+│       ├── src/
+│       │   ├── Result.ts                # Result<T, E> type
+│       │   ├── index.ts                 # Re-exports for @health/core barrel
+│       │   ├── container.ts             # Composition root (server-only)
+│       │   ├── models/
+│       │   │   ├── health.ts            # DailyHealthMetrics
+│       │   │   ├── nutrition.ts         # Meal, FoodItem, MacroSummary
+│       │   │   └── supplement.ts        # Supplement, DoseLog, IngredientDose
+│       │   ├── ports/                   # Interfaces infrastructure must implement
+│       │   │   ├── IDatabase.ts
+│       │   │   ├── IHealthDataProvider.ts
+│       │   │   ├── IFoodAI.ts
+│       │   │   ├── IImageCapture.ts
+│       │   │   └── IStorage.ts
+│       │   ├── services/                # Business logic — zero platform deps
+│       │   │   ├── HealthSyncService.ts
+│       │   │   ├── NutritionService.ts
+│       │   │   ├── SupplementService.ts
+│       │   │   └── DashboardService.ts
+│       │   ├── usecases/                # One file per user-facing workflow
+│       │   │   ├── SyncWearableData.ts
+│       │   │   ├── LogMealFromPhoto.ts
+│       │   │   ├── LogMealFromBarcode.ts
+│       │   │   ├── LogSupplement.ts
+│       │   │   ├── AddSupplementFromPhoto.ts
+│       │   │   ├── ImportAppleHealthExport.ts
+│       │   │   └── GetDashboardSummary.ts
+│       │   └── infrastructure/
+│       │       ├── SupabaseAdapter.ts
+│       │       ├── OuraApiAdapter.ts
+│       │       ├── AppleHealthXmlAdapter.ts
+│       │       ├── ClaudeVisionAdapter.ts
+│       │       ├── SupabaseStorageAdapter.ts
+│       │       └── WebCameraAdapter.ts
+│       ├── package.json                 # name: "@health/core", main: ./src/index.ts
+│       ├── tsconfig.json
+│       └── vitest.config.ts
 │
 ├── supabase/
 │   ├── migrations/001_initial_schema.sql
-│   └── seed.sql                         # Pre-load your supplement stack
+│   └── seed.sql
 │
+├── pnpm-workspace.yaml
+├── tsconfig.base.json
+├── package.json                         # root — devDependencies only
 ├── .env.local                           # Never committed
 ├── .env.local.example
 ├── CLAUDE.md
-├── INSTRUCTIONS.md
-├── package.json
-├── tsconfig.json
-└── next.config.ts
+└── INSTRUCTIONS.md
 ```
 
 ---
@@ -684,31 +695,43 @@ Phase 1 services need no changes. The agent is a new consumer of what's already 
 - **No `any` types.** Use `unknown` and narrow with Zod.
 - **All dates as `YYYY-MM-DD` strings** in the domain layer. Postgres `date` handles storage.
 - **All async service/use-case methods return `Promise<Result<T>>`** — no thrown exceptions crossing layer boundaries.
-- **Domain services are constructor-injected.** Never import concrete adapters inside `src/core/`.
+- **Domain services are constructor-injected.** Never import concrete adapters inside `packages/core/src/`.
 - **One use-case per file.** Each orchestrates services and returns a plain object.
-- **No business logic in React components.** Components → hooks → `/api/*` routes → use-cases → services.
-- **Supabase is server-only.** The browser never imports `@supabase/supabase-js`. Hooks call `/api/*` route handlers, which import `src/container.ts` and run services against `SupabaseAdapter` with the service role key. There is no anon key and no `NEXT_PUBLIC_SUPABASE_*` — that also means no RLS to configure for personal use.
-- **All secrets are server-only.** `ANTHROPIC_API_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `OURA_CLIENT_SECRET` are only read inside route handlers. Never prefix with `NEXT_PUBLIC_`.
-- **`src/container.ts` is server-only.** It imports Node-side adapters (Supabase, Oura, Claude). Browser-only adapters like `WebCameraAdapter` are imported directly by the React component that uses them, not via the container.
+- **No business logic in React components.** Components → hooks → Fastify API → use-cases → services.
+- **Browser fetches cross-origin with credentials.** `apps/web` hooks call `${NEXT_PUBLIC_API_URL}/api/*` (the Fastify server on Render) with `credentials: 'include'`. The Fastify CORS config mirrors `WEB_ORIGIN` and allows credentials.
+- **Auth is a shared-secret cookie.** `POST /api/auth/login` checks `body.password === AUTH_SECRET` and sets an httpOnly cookie. All other routes (except `/api/oura/callback`) require that cookie.
+- **Supabase is `apps/api`-only.** The browser never imports `@supabase/supabase-js`. `packages/core/src/container.ts` (server-only) creates the Supabase client with the service role key. No anon key, no RLS.
+- **All secrets are `apps/api`-only.** `ANTHROPIC_API_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `OURA_CLIENT_SECRET`, `AUTH_SECRET`, `COOKIE_SECRET` are never set in `apps/web`. `NEXT_PUBLIC_API_URL` is the only public variable.
+- **`packages/core/src/container.ts` is server-only.** It imports Node-side adapters (Supabase, Oura, Claude). Browser-only adapters like `WebCameraAdapter` are imported directly by the React component that uses them.
 - **Tailwind only** — no inline styles, no CSS modules. NativeWind uses the same class names on iOS.
 
 ---
 
 ## Environment variables
 
-All variables are server-only — none are prefixed `NEXT_PUBLIC_`. The browser
-talks to Supabase via Next.js route handlers, never directly.
+Variables are split by app. `apps/api` is entirely server-side.
+`NEXT_PUBLIC_API_URL` is the only variable visible to the browser.
 
 ```bash
-# .env.local
+# ── apps/api (Render) — all server-only ──────────────────────────────────
 SUPABASE_URL=https://xxxx.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=eyJ...
 
 OURA_CLIENT_ID=
 OURA_CLIENT_SECRET=
-OURA_REDIRECT_URI=http://localhost:3000/api/oura/callback
+OURA_REDIRECT_URI=https://your-api.onrender.com/api/oura/callback  # update after deploy
 
 ANTHROPIC_API_KEY=
+
+# Shared secret — browser POSTs this to /api/auth/login, API sets it as cookie
+AUTH_SECRET=<long random string>
+# Used to sign/verify cookies in Fastify
+COOKIE_SECRET=<long random string>
+# Vercel URL of apps/web — used for CORS origin and Oura OAuth redirect
+WEB_ORIGIN=https://your-app.vercel.app  # http://localhost:3000 in dev
+
+# ── apps/web (Vercel) — browser-visible ──────────────────────────────────
+NEXT_PUBLIC_API_URL=https://your-api.onrender.com  # http://localhost:3001 in dev
 ```
 
 ---
@@ -735,8 +758,9 @@ export const USER_PROFILE = {
 
 ## iOS extension plan (when ready)
 
-1. Convert to monorepo: `packages/core` (extracted from `src/core/`), `apps/web`, `apps/ios`
-2. `apps/ios` bootstraps Expo, imports `@health/core` workspace package
+The monorepo structure (`packages/core`, `apps/web`, `apps/api`) is already in place.
+
+1. Add `apps/ios` — bootstraps Expo, imports `@health/core` workspace package
 3. Implement `IDatabase` with `expo-sqlite` (same schema) — or keep Supabase JS, which works in RN
 4. **Implement `HealthKitAdapter` with `react-native-health` — same `IHealthDataProvider` port as `AppleHealthXmlAdapter`.** In the iOS container, swap `AppleHealthXmlAdapter` for `HealthKitAdapter`. `HealthSyncService`, the merge logic, and every consumer of health data stay byte-identical. The XML import UI and `apple_health_daily` table become dead code on iOS — remove the route and component from the iOS app's render tree.
 5. Implement `IImageCapture` with `expo-camera` + `expo-barcode-scanner`

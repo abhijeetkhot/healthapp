@@ -19,57 +19,58 @@ layer in mind, even though neither is built yet.
 
 ## Phase 1 — Project scaffolding
 
-### Step 1: Bootstrap Next.js
+### Step 1: Bootstrap the monorepo
 
-Bootstrap into the current directory (so docs and code live together at the
-repo root). The `.` argument targets the current dir; the existing
-`CLAUDE.md`, `INSTRUCTIONS.md`, `.env.local`, and `.gitignore` are preserved
-(Next.js's template `.gitignore` will overwrite ours — we restore it in a
-moment).
+The project uses pnpm workspaces with three packages: `packages/core` (shared
+domain layer), `apps/web` (Next.js on Vercel), and `apps/api` (Fastify on Render).
 
 ```bash
+# Install pnpm if needed
+npm install -g pnpm
+
+# Create workspace root files
+cat > pnpm-workspace.yaml << 'EOF'
+packages:
+  - 'apps/*'
+  - 'packages/*'
+EOF
+
+# Create directory structure
+mkdir -p packages/core/src/{models,ports,services,usecases,infrastructure}
+mkdir -p packages/core/test
+mkdir -p apps/web/src/{app,components,hooks,store,config}
+mkdir -p apps/api/src/{plugins,lib,routes}
+```
+
+Create `tsconfig.base.json` at the root with strict TS settings that all
+packages extend (see repo root for the current file).
+
+### Step 2: Bootstrap Next.js (apps/web)
+
+```bash
+cd apps/web
 npx create-next-app@latest . \
-  --typescript --tailwind --app --src-dir --eslint --turbopack \
+  --typescript --tailwind --app --src-dir --eslint \
   --import-alias "@/*" --yes
 ```
 
-The `--src-dir` flag puts the App Router under `src/app/` (matching CLAUDE.md's
-repo structure). Routes are still resolved relative to `app/`, so
-`src/app/(dashboard)/page.tsx` becomes your root `/`.
+`apps/web` has **no `/api` directory** — all API routes live in `apps/api`.
+Add `NEXT_PUBLIC_API_URL` to `apps/web`'s `.env.local` pointing at `apps/api`.
 
-After it finishes, restore the env-file exclusions in `.gitignore` (the
-Next.js template covers `.env*` but our version had Supabase + editor extras):
+### Step 3: Set up the Fastify API (apps/api)
 
 ```bash
-cat .gitignore.preserve >> .gitignore && rm .gitignore.preserve
+cd apps/api
+pnpm add fastify @fastify/cors @fastify/cookie @fastify/helmet \
+  @fastify/multipart fastify-type-provider-zod fastify-plugin \
+  zod tsx date-fns @health/core
+pnpm add -D typescript @types/node vitest @vitest/coverage-v8
 ```
 
-### Step 2: Install dependencies
+### Step 4: Set up Supabase CLI
 
 ```bash
-# Supabase
-npm install @supabase/supabase-js
-
-# Utilities
-npm install date-fns zod zustand
-
-# Anthropic SDK
-npm install @anthropic-ai/sdk
-
-# Recharts
-npm install recharts
-
-# Apple Health export parsing (browser-side — see WF-07)
-npm install jszip fast-xml-parser
-
-# Dev
-npm install -D @types/node
-```
-
-### Step 3: Set up Supabase CLI
-
-```bash
-npm install -D supabase
+pnpm add -D supabase   # or install globally
 npx supabase init
 npx supabase start   # starts local Postgres + Studio on localhost:54323
 ```
@@ -77,24 +78,12 @@ npx supabase start   # starts local Postgres + Studio on localhost:54323
 This creates `supabase/` directory. Add `supabase/.branches` and
 `supabase/.temp` to `.gitignore`.
 
-### Step 4: Create directory structure
-
-```bash
-mkdir -p src/core/{models,services,ports,usecases}
-mkdir -p src/infrastructure/ios
-mkdir -p src/components/{dashboard,logging,ui}
-mkdir -p src/hooks src/store src/config
-mkdir -p src/app/api/{oura/auth,oura/callback,sync,agent}
-mkdir -p src/app/api/{dashboard,meals,meals/identify,supplements,supplements/logs}
-mkdir -p src/app/{food,supplements,settings}
-```
-
 ### Step 5: Set up environment variables
 
-Create `.env.local`. Every value is server-only — none are prefixed
-`NEXT_PUBLIC_`. The browser reaches Supabase only via `/api/*` route handlers.
-
-Environment variables are present in `.env.local`
+Copy `.env.local.example` to `.env.local` and fill in values. Key split:
+- `apps/api` reads all secrets (`SUPABASE_*`, `OURA_*`, `ANTHROPIC_API_KEY`,
+  `AUTH_SECRET`, `COOKIE_SECRET`, `WEB_ORIGIN`)
+- `apps/web` only needs `NEXT_PUBLIC_API_URL` (the Render URL of `apps/api`)
 
 ---
 
@@ -608,110 +597,79 @@ from `/api/*` routes, which import the container.
 
 ---
 
-## Phase 5 — Next.js API routes
+## Phase 5 — Fastify API routes (apps/api)
 
-These run server-side. They can safely use `ANTHROPIC_API_KEY` and
-`SUPABASE_SERVICE_ROLE_KEY`.
+All business logic routes live in `apps/api/src/routes/`. They run on Render,
+can safely use `ANTHROPIC_API_KEY` and `SUPABASE_SERVICE_ROLE_KEY`, and are
+never bundled into the browser.
 
-### Step 18: Oura OAuth routes
+### Step 18: Auth plugin + routes
 
-`src/app/api/oura/auth/route.ts`:
+`apps/api/src/plugins/auth.ts` — wrap with `fastify-plugin` (`fp`) so the
+`onRequest` hook applies globally. Skip `/api/auth/login` and
+`/api/oura/callback`. Check `request.cookies.auth === process.env.AUTH_SECRET`.
+
+`apps/api/src/routes/auth.ts`:
 ```typescript
-export async function GET() {
-  const params = new URLSearchParams({
-    response_type: 'code',
-    client_id: process.env.OURA_CLIENT_ID!,
-    redirect_uri: process.env.OURA_REDIRECT_URI!,
-    scope: 'daily',
+export const authRoutes: FastifyPluginAsyncZod = async (app) => {
+  app.post('/login', {
+    schema: { body: z.object({ password: z.string() }) },
+  }, async (req, reply) => {
+    if (req.body.password !== process.env.AUTH_SECRET)
+      return reply.code(401).send({ error: 'Invalid password' })
+    reply.setCookie('auth', process.env.AUTH_SECRET!, { httpOnly: true, ... })
+    return reply.code(200).send({ ok: true })
   })
-  return Response.redirect(
-    `https://cloud.ouraring.com/oauth/authorize?${params}`
-  )
-}
-```
-
-`src/app/api/oura/callback/route.ts`:
-```typescript
-export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url)
-  const code = searchParams.get('code')
-
-  const tokenRes = await fetch('https://api.ouraring.com/oauth/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'authorization_code',
-      code: code!,
-      client_id: process.env.OURA_CLIENT_ID!,
-      client_secret: process.env.OURA_CLIENT_SECRET!,
-      redirect_uri: process.env.OURA_REDIRECT_URI!,
-    }),
+  app.post('/logout', async (_req, reply) => {
+    reply.clearCookie('auth', { path: '/' })
+    return reply.code(200).send({ ok: true })
   })
-
-  const tokens = await tokenRes.json()
-  // Save tokens via services.health (uses SupabaseAdapter with service role)
-  // Redirect to /settings?connected=true
 }
 ```
 
-### Step 19: Sync route
+### Step 19: respond() helper
 
-`src/app/api/sync/route.ts` — called on app load and manual sync:
+`apps/api/src/lib/respond.ts`:
 ```typescript
-import { services } from '@/container'
-import { syncWearableData } from '@/core/usecases/SyncWearableData'
-import { format } from 'date-fns'
+import type { FastifyReply } from 'fastify'
+import type { Result } from '@health/core'
 
-export async function POST() {
-  const today = format(new Date(), 'yyyy-MM-dd')
-  const result = await syncWearableData(services.health, today)
-  if (!result.ok) return Response.json({ error: result.error.message }, { status: 500 })
-  return Response.json(result.value)
-}
-```
-
-### Step 20: Food AI route
-
-Claude vision must be called server-side. Create `src/app/api/meals/identify/route.ts`:
-```typescript
-import { services } from '@/container'
-
-export async function POST(request: Request) {
-  const { imageBase64 } = await request.json()
-  const result = await services.nutrition.identifyFoodsFromImage(imageBase64)
-  if (!result.ok) return Response.json({ error: result.error.message }, { status: 500 })
-  return Response.json(result.value)
-}
-```
-
-The `PhotoCaptureFlow` component captures the image client-side, then POSTs
-the base64 to this route. Never send the raw API key to the client.
-
-### Step 20b: Data routes for hooks
-
-Hooks never touch Supabase — they fetch from these routes, which import the
-server container. Mirror the same shape for each domain:
-
-```typescript
-// src/app/api/dashboard/route.ts
-import { services } from '@/container'
-import { getDashboardSummary } from '@/core/usecases/GetDashboardSummary'
-
-export async function GET(request: Request) {
-  const date = new URL(request.url).searchParams.get('date')!
-  const result = await getDashboardSummary(services.dashboard, date)
+export function respond<T>(reply: FastifyReply, result: Result<T>, successStatus = 200) {
   return result.ok
-    ? Response.json(result.value)
-    : Response.json({ error: result.error.message }, { status: 500 })
+    ? reply.code(successStatus).send(result.value)
+    : reply.code(500).send({ error: result.error.message })
 }
 ```
 
-Build the same one-liner for:
-- `src/app/api/meals/route.ts` — `GET ?date=` and `POST` (new meal)
-- `src/app/api/supplements/route.ts` — `GET` (stack), `POST` (add supplement)
-- `src/app/api/supplements/logs/route.ts` — `GET ?date=`, `POST` (dose log)
+### Step 20: Domain routes
 
-Each route is a 5-line wrapper around a use-case. No business logic here.
+Use the **schema-first** pattern — Fastify validates via Zod before the handler runs:
+```typescript
+// apps/api/src/routes/meals.ts
+import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod'
+import { z } from 'zod'
+import { services } from '@health/core/container'
+import { respond } from '../lib/respond'
+
+export const mealsRoutes: FastifyPluginAsyncZod = async (app) => {
+  app.get('/', {
+    schema: { querystring: z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }) },
+  }, async (req, reply) => respond(reply, await services.nutrition.getMeals(req.query.date)))
+
+  app.post('/', {
+    schema: { body: MealSchema.omit({ id: true }) },
+  }, async (req, reply) => respond(reply, await services.nutrition.saveMeal(req.body), 201))
+}
+```
+
+Build the same schema-first wrapper for:
+- `dashboard.ts` — `GET ?date=` → `getDashboardSummary`
+- `mealsIdentify.ts` — `POST imageBase64` → `logMealFromPhoto`
+- `supplements.ts` — `GET` (stack), `POST` (add supplement)
+- `supplementsLogs.ts` — `GET ?date=`, `POST` (dose log via `logSupplement`)
+- `sync.ts` — `POST` → `syncWearableData`
+- `healthImport.ts` — `POST rows[]` → `importAppleHealthExport`
+- `oura.ts` — `GET /auth` (redirect), `GET /callback` (exchange + redirect to `WEB_ORIGIN`)
 
 ---
 
@@ -846,10 +804,11 @@ Minimum viable settings:
 
 ## Phase 7 — Deployment
 
+Two targets: **Vercel** for `apps/web`, **Render** for `apps/api`.
+
 ### Step 27: Push to GitHub
 
 ```bash
-git init
 git add .
 git commit -m "initial commit"
 gh repo create holistic-health --private
@@ -862,24 +821,46 @@ In Supabase dashboard:
 1. Create a new project
 2. Push migrations: `npx supabase db push --linked`
 3. Run seed SQL in the dashboard SQL editor
-4. Copy the project URL and keys
+4. Copy the project URL and service role key
 
-### Step 29: Deploy to Vercel
+### Step 29: Deploy apps/api to Render
+
+1. Create a new **Web Service** on Render
+2. Connect the GitHub repo; set:
+   - **Runtime**: Docker
+   - **Dockerfile path**: `./apps/api/Dockerfile`
+   - **Docker context**: `.` (repo root)
+3. Set all `apps/api` environment variables in the Render dashboard:
+   `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `OURA_CLIENT_ID`,
+   `OURA_CLIENT_SECRET`, `ANTHROPIC_API_KEY`, `AUTH_SECRET`,
+   `COOKIE_SECRET`, `WEB_ORIGIN` (Vercel URL, set after Step 30),
+   `OURA_REDIRECT_URI` (= `https://your-api.onrender.com/api/oura/callback`)
+4. Note the Render URL (`https://your-api.onrender.com`)
+
+`apps/api/render.yaml` in the repo documents the service definition.
+
+### Step 30: Deploy apps/web to Vercel
 
 ```bash
-npx vercel
+npx vercel --cwd apps/web
 ```
 
-Set environment variables in Vercel dashboard (Settings → Environment Variables):
-- All keys from `.env.local`, using production Supabase values
-- `OURA_REDIRECT_URI` → `https://your-app.vercel.app/api/oura/callback`
+Set in Vercel dashboard (Settings → Environment Variables):
+- `NEXT_PUBLIC_API_URL` → `https://your-api.onrender.com`
 
-Update the Oura developer app's redirect URI to match.
+Note the Vercel URL (`https://your-app.vercel.app`).
 
-### Step 30: Reconnect Oura
+### Step 31: Cross-link the two services
 
-Visit your deployed app → Settings → Connect Oura. The OAuth flow now runs
-against the production deployment. Tokens are stored in production Supabase.
+1. In Render, update `WEB_ORIGIN` to the Vercel URL
+2. Update the Oura developer app's redirect URI to
+   `https://your-api.onrender.com/api/oura/callback`
+
+### Step 32: Reconnect Oura
+
+Visit your deployed app → Settings → Connect Oura. The OAuth flow redirects
+to the Render callback, stores tokens in production Supabase, then redirects
+back to the Vercel frontend.
 
 ---
 
@@ -939,14 +920,21 @@ Start with read-only tools. Add write tools one at a time:
 
 ```bash
 # First time
-npm install
+pnpm install                        # from repo root — installs all packages
 cp .env.local.example .env.local    # fill in your keys
 npx supabase start
 npx supabase db push
 npx supabase db reset               # applies seed with your supplement stack
 
-# Every time
-npm run dev                         # localhost:3000
+# Every time (two terminals)
+pnpm --filter @health/api dev       # Fastify on localhost:3001
+pnpm --filter @health/web dev       # Next.js on localhost:3000
+
+# Tests (all packages)
+pnpm -r test
+
+# Typecheck (all packages)
+pnpm -r typecheck
 ```
 
 Supabase Studio: `http://localhost:54323` — inspect your DB directly.
